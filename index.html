@@ -569,8 +569,8 @@
       const raw = safeParse(localStorage.getItem(STORAGE_KEY), null);
       const state = raw && typeof raw === "object" ? raw : { currentUser: "", users: {} };
       state.users = state.users && typeof state.users === "object" ? state.users : {};
-      if (state.currentUser && state.users[state.currentUser]) {
-        ensureUser(state.currentUser);
+      if (state.currentUser && !state.users[state.currentUser]) {
+        state.users[state.currentUser] = createUserData(state.currentUser);
       }
       return state;
     }
@@ -992,7 +992,7 @@
 
           <div class="toolbar">
             <button class="primary-btn" id="submitTrainingBtn">提交答案</button>
-            <span class="subtle">当前待刷队列首题：${queue[0]}</span>
+            <span class="subtle">${type === "multi" ? "多选题支持选中后自动识别正确答案；若未自动跳转，可点提交答案判定。" : "判断题/单选题支持选中即判定，答对后自动进入下一题。"}</span>
           </div>
         </section>
       `;
@@ -1350,6 +1350,61 @@
       document.querySelectorAll(".quick-nav").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.target)));
     }
 
+    function processTrainingAnswer(type, selected, options = {}){
+      const { autoAdvanceOnCorrect = false } = options;
+      const user = currentUser();
+      const qid = user?.progress?.[type]?.queue?.[0];
+      const q = qid ? getQuestionById(qid) : null;
+      if (!q) return;
+      if (!selected.length) {
+        toast("请先选择答案后再提交。", "error");
+        return;
+      }
+
+      const ok = isAnswerCorrect(q, selected);
+      const prog = user.progress[type];
+      const queue = prog.queue.slice();
+      queue.shift();
+      let actionText = "";
+
+      if (ok) {
+        if (!prog.mastered.includes(qid)) prog.mastered.push(qid);
+        prog.queue = queue;
+        actionText = "答对，题目已从待刷队列移除并加入已掌握集合。";
+      } else {
+        queue.push(qid);
+        prog.queue = queue;
+        actionText = "答错，题目已放回待刷队列末尾，后续会再次出现。";
+      }
+
+      saveAppState();
+      renderApp();
+
+      if (ok && autoAdvanceOnCorrect) {
+        toast("回答正确，已自动进入下一题。", "success");
+        return;
+      }
+
+      if (ok) {
+        openFeedbackModal({
+          correct: true,
+          title: `${TYPE_META[type].short} · ${q.id}`,
+          answerText: answerText(q),
+          explanation: q.explanation,
+          actionText
+        });
+        return;
+      }
+
+      openFeedbackModal({
+        correct: false,
+        title: `${TYPE_META[type].short} · ${q.id}`,
+        answerText: answerText(q),
+        explanation: q.explanation,
+        actionText
+      });
+    }
+
     function bindTrainingActions(type){
       document.getElementById("resetProgressBtn")?.addEventListener("click", () => {
         if (!confirm(`确定要重置【${TYPE_META[type].short}】的训练进度吗？该操作会清空待刷记录与已掌握记录。`)) return;
@@ -1360,41 +1415,38 @@
         toast(`${TYPE_META[type].short}训练进度已重置。`, "success");
       });
 
+      const formInputs = [...document.querySelectorAll('#trainingForm input')];
       const submitBtn = document.getElementById("submitTrainingBtn");
-      if (!submitBtn) return;
-      submitBtn.addEventListener("click", () => {
-        const user = currentUser();
-        const qid = user.progress[type].queue[0];
-        const q = getQuestionById(qid);
-        const selected = [...document.querySelectorAll('#trainingForm input:checked')].map(input => input.value);
-        if (!selected.length) {
-          toast("请先选择答案后再提交。", "error");
-          return;
-        }
 
-        const ok = isAnswerCorrect(q, selected);
-        const prog = user.progress[type];
-        const queue = prog.queue.slice();
-        queue.shift();
-        let actionText = "";
-        if (ok) {
-          if (!prog.mastered.includes(qid)) prog.mastered.push(qid);
-          prog.queue = queue;
-          actionText = "答对，题目已从待刷队列移除并加入已掌握集合。";
-        } else {
-          queue.push(qid);
-          prog.queue = queue;
-          actionText = "答错，题目已放回待刷队列末尾，后续会再次出现。";
-        }
-        saveAppState();
-        renderApp();
-        openFeedbackModal({
-          correct: ok,
-          title: `${TYPE_META[type].short} · ${q.id}`,
-          answerText: answerText(q),
-          explanation: q.explanation,
-          actionText
+      if (type !== "multi") {
+        submitBtn?.setAttribute("hidden", "hidden");
+        formInputs.forEach(input => {
+          input.addEventListener("change", () => {
+            const selected = [...document.querySelectorAll('#trainingForm input:checked')].map(node => node.value);
+            if (selected.length) {
+              processTrainingAnswer(type, selected, { autoAdvanceOnCorrect: true });
+            }
+          });
         });
+        return;
+      }
+
+      formInputs.forEach(input => {
+        input.addEventListener("change", () => {
+          const user = currentUser();
+          const qid = user?.progress?.[type]?.queue?.[0];
+          const q = qid ? getQuestionById(qid) : null;
+          if (!q) return;
+          const selected = [...document.querySelectorAll('#trainingForm input:checked')].map(node => node.value);
+          if (selected.length && isAnswerCorrect(q, selected)) {
+            processTrainingAnswer(type, selected, { autoAdvanceOnCorrect: true });
+          }
+        });
+      });
+
+      submitBtn?.addEventListener("click", () => {
+        const selected = [...document.querySelectorAll('#trainingForm input:checked')].map(input => input.value);
+        processTrainingAnswer(type, selected, { autoAdvanceOnCorrect: false });
       });
     }
 
